@@ -8,11 +8,16 @@
 #include <unistd.h>
 #include <math.h>
 #include <fcntl.h>
+#include <linux/futex.h>
+#include <errno.h>
+#include <sys/syscall.h>
+#include <sys/shm.h>
 
 #define ALLOC_ADDR 0xB44603B3
 #define THREADS_AMOUNT 3
 #define FILL_MEM_SIZE 118
 #define DUMP_FILE_SIZE 45
+
 
 struct threadFuncArg {
     void * writeAddr;
@@ -80,7 +85,7 @@ fmem(void *addr, size_t size, int logEnabled)
         }
    
     }
-
+    
     for (int i = 0; i < THREADS_AMOUNT; i++) {
         err = pthread_join(threads[i], NULL);
 
@@ -100,21 +105,74 @@ fmem(void *addr, size_t size, int logEnabled)
     return mmapAddr;
 }
 
+int futex(int* uaddr, int futex_op, int val) {
+      return syscall(SYS_futex, uaddr, futex_op, val, NULL, NULL, 0);
+}
+
+void wait_on_futex_value(int* futex_addr, int val) {
+    futex(futex_addr, FUTEX_WAIT, val);
+}
+
+void wake_futex_blocking(int* futex_addr, int val) {
+    while (1) {
+        int futex_rc = futex(futex_addr, FUTEX_WAKE, val);
+        if (futex_rc == -1) {
+            perror("futex wake");
+            exit(1);
+        } else if (futex_rc > 0) {
+            return;
+        }
+    }
+}
+
+
 void
-dumpMem(int fd, void * addr, int size) {
+dumpMem(int fd, void * addr, int size, int * futex) {
+    wait_on_futex_value(futex, 0);
+    *futex = 0;
     printf("Dump memory to %d\t from %p \t[size=%d]", fd, addr, size);
-    for (int i = 0; i < size / 11; i++) {
-        void * pointer = addr + i;
-        size_t r = write(fd, &pointer, 11);
+    *futex = 1;
+    //for (int i = 0; i < size / 11; i++) {
+    //    void * pointer = addr + i;
+    //    size_t r = write(fd, &pointer, 11);
         // printf(" bytes written %zu", r);
+    //}
+}
+
+void
+counter(unsigned int times) {
+    for (int i = times; i > 0; i--) {
+        printf("...%d\n", i);
+        sleep(1);
     }
 }
 
 struct memoryDumpMap {
     int fd;
+    void * futex;
     void * addr;
     int size;
 };
+
+struct dumpTFArgs {
+    struct memoryDumpMap* dumpMap[10];
+    int filesAmount;
+};
+
+void *
+dumpMemThreadFunc(void * arg) {
+    struct dumpTFArgs * dumpArg = (struct dumpTFArgs *) arg;
+    while (1) {
+        for (int i = 0; i < dumpArg->filesAmount; i++) {
+            struct memoryDumpMap * dumpMap = dumpArg->dumpMap[i];
+            dumpMem(dumpMap->fd, dumpMap->addr, dumpMap->size, dumpMap->futex);
+            puts("");
+            sleep(1);
+        }
+    }
+
+ 
+}
 
 int main()
 {
@@ -134,7 +192,9 @@ int main()
     int filesAmount = fillMemSize / dumpMemSize + (fillMemSize % dumpMemSize > 0 ? 1 : 0);
 
     int files[filesAmount];
-    struct memoryDumpMap* dumpMap[filesAmount];
+
+    struct dumpTFArgs * args = malloc(sizeof(struct dumpTFArgs));
+    args->filesAmount = filesAmount;
 
     for (int i = 0; i < filesAmount; i++) {
         
@@ -145,24 +205,40 @@ int main()
         if (files[i] == -1) {
             puts("Error: Can't create or open file");
         }
-
-        dumpMap[i]->fd = files[i];
-        dumpMap[i]->addr = memoryAddr + i * (dumpMemSize / 8);
-        dumpMap[i]->size = dumpMemSize;
+        args->dumpMap[i] = malloc(sizeof(struct memoryDumpMap));
+        args->dumpMap[i]->fd = files[i];
+        args->dumpMap[i]->addr = memoryAddr + i * (dumpMemSize / 8);
+        args->dumpMap[i]->size = dumpMemSize;
+        int shm_id = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0666);
+        args->dumpMap[i]->futex = shmat(shm_id, NULL, 0);
     }
    
-    puts("Start infinite loop...");
-
-    //while (1) {
-        for (int i = 0; i < filesAmount; i++) {
-            dumpMem(dumpMap[i]->fd, dumpMap[i]->addr, dumpMap[i]->size);
-            puts("");
-            sleep(1);
-        }
-    //}
     
-    for (int i = 0; i < filesAmount; i++){
-        close(files[i]);
+    pthread_t memDumpTP;
+    pthread_create(&memDumpTP, NULL, dumpMemThreadFunc, args);
+    
+    puts("Writing thread created...");
+    
+    int times = 3;
+    printf("Unlocking all blocks after %d seconds\n", times);
+    counter(times);
+
+    puts("Unlocking all blocks...");
+    for (int i = 0; i < filesAmount; i++) {
+        int * futex = args->dumpMap[i]->futex;
+        wake_futex_blocking(futex, 1);
+    }
+
+    //for (int i = 0; i < filesAmount; i++){
+    //    close(files[i]);
+    //}
+
+
+
+
+    int err = pthread_join(memDumpTP, NULL);
+    if (err != 0) {
+        printf("Error pthred_join. Status: %d\n", err);
     }
 
     return 0;
