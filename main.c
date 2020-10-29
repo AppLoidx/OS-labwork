@@ -12,12 +12,15 @@
 #include <errno.h>
 #include <sys/syscall.h>
 #include <sys/shm.h>
+#include <inttypes.h>
+#include <sched.h>
 
-#define ALLOC_ADDR 0xB44603B3
-#define THREADS_AMOUNT 3
-#define FILL_MEM_SIZE 118
-#define DUMP_FILE_SIZE 45
-
+#define ALLOC_ADDR      0xB44603B3
+#define THREADS_AMOUNT  3
+#define FILL_MEM_SIZE   118
+#define DUMP_FILE_SIZE  45
+#define DATA_BLOCK_SIZE 11
+#define COUNTERS_THREAD_AMOUNT 11 
 
 struct threadFuncArg {
     void * writeAddr;
@@ -130,13 +133,23 @@ void
 dumpMem(int fd, void * addr, int size, int * futex) {
     wait_on_futex_value(futex, 0);
     *futex = 0;
-    printf("Dump memory to %d\t from %p \t[size=%d]", fd, addr, size);
+    printf("Dump memory to %d\t from %p \t[size=%.2f MB]\n", fd, addr, size / (1024.0 * 1024.0));
     *futex = 1;
-    //for (int i = 0; i < size / 11; i++) {
-    //    void * pointer = addr + i;
-    //    size_t r = write(fd, &pointer, 11);
-        // printf(" bytes written %zu", r);
-    //}
+    int iterations = size / DATA_BLOCK_SIZE;
+    int tenPercent = iterations / 10;
+    int errno;
+    int res = ftruncate(fd, 0);
+    if (res == -1) {
+        printf("truncate : %d\n", errno);
+    }
+    printf("Truncate file result: %d\n", res);
+    for (int i = 0; i < iterations; i++) {
+        if (i % tenPercent == 0) {
+            printf("%d0%% - %.2f MB\n", i / tenPercent, (size - i * DATA_BLOCK_SIZE) / (1024.0 * 1024.0));
+        }
+        void * pointer = addr + i;
+        size_t r = write(fd, &pointer, DATA_BLOCK_SIZE);
+    }
 }
 
 void
@@ -170,9 +183,58 @@ dumpMemThreadFunc(void * arg) {
             sleep(1);
         }
     }
-
- 
 }
+
+int
+aggregateFile(struct memoryDumpMap * args) {
+    int * futex = args->futex;
+    wait_on_futex_value(futex, 0);
+    *futex = 0;
+    uint64_t sum = 0;
+    
+    if (lseek(args->fd, 0, SEEK_SET) == -1) {
+        return -1;
+    }
+
+    unsigned char buf [DATA_BLOCK_SIZE];
+    
+    while(1) {
+        
+        size_t readBytes = read(args->fd, &buf, DATA_BLOCK_SIZE);
+        
+        if (readBytes == -1) {
+            perror("Error file read");
+            break;
+        }
+
+        if (readBytes < DATA_BLOCK_SIZE) {
+            if (readBytes == 0) {
+                break;
+            }
+        } else {
+            for (int i = 0; i < DATA_BLOCK_SIZE; i++) {
+                sum += buf[i];
+            }
+        }
+    }
+
+    printf("Calculated sum on file [%d]:\t %lu\n", args->fd, sum);
+
+    *futex = 1;
+
+    return 0;
+}
+
+void *
+readFileFunc(void * arg) {
+    struct dumpTFArgs * dumpArg = (struct dumpTFArgs *) arg;
+    while(1) {
+        int index = rand() % dumpArg->filesAmount;
+        aggregateFile(dumpArg->dumpMap[index]);
+        sleep(1);
+    }
+}
+
 
 int main()
 {
@@ -215,13 +277,34 @@ int main()
    
     
     pthread_t memDumpTP;
-    pthread_create(&memDumpTP, NULL, dumpMemThreadFunc, args);
-    
+    pthread_attr_t * memDTA = malloc(sizeof(pthread_attr_t));
+    struct sched_param * memDP = malloc(sizeof(struct sched_param));
+    // memDP->sched_priority = 20;
+
+
+    int res;
+    res = pthread_attr_setschedparam(memDTA, memDP);
+    res = pthread_create(&memDumpTP, NULL, dumpMemThreadFunc, args);
     puts("Writing thread created...");
     
+    puts("Creating reading threads");
+    pthread_t counters[COUNTERS_THREAD_AMOUNT];
+     
+    pthread_attr_t * memAttr = malloc(sizeof(pthread_attr_t));
+    struct sched_param * memSP = malloc(sizeof(struct sched_param));
+    // memSP->sched_priority = 25;
+
+    res = pthread_attr_setschedparam(memAttr, memSP);
+    for (int i = 0; i < COUNTERS_THREAD_AMOUNT; i++) {
+        counters[i] = pthread_create(&counters[i], NULL, readFileFunc, args); 
+    }
+
+    printf("Created %d aggregator threads\n", COUNTERS_THREAD_AMOUNT);
+
     int times = 3;
     printf("Unlocking all blocks after %d seconds\n", times);
     counter(times);
+
 
     puts("Unlocking all blocks...");
     for (int i = 0; i < filesAmount; i++) {
@@ -229,16 +312,13 @@ int main()
         wake_futex_blocking(futex, 1);
     }
 
-    //for (int i = 0; i < filesAmount; i++){
-    //    close(files[i]);
-    //}
-
-
-
-
     int err = pthread_join(memDumpTP, NULL);
     if (err != 0) {
         printf("Error pthred_join. Status: %d\n", err);
+    }
+
+    for (int i = 0; i < COUNTERS_THREAD_AMOUNT; i++) {
+        pthread_join(counters[i], NULL);
     }
 
     return 0;

@@ -1,3 +1,6 @@
 forks
-a.out
+*.out
+*.o
 main
+
+dump.* 
