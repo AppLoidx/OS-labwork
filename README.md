@@ -1,4 +1,4 @@
-# OS laboratory work
+# OS laboratory work [60%]
 
 ### Run
 
@@ -18,3 +18,13 @@ Run script with strace:
 ```bash
 ./strace.sh
 ```
+
+### Other files
+
+Move to test directory
+
+* [pthreadtest.c](test/pthreadtest.c) - prove that threads have the same pid [`make pthread-test`]
+* [random.c](main/random.c) - work with `/dev/urandom` [`make random`]
+* [random-with-thread.c](main/random-with-thread.c) - random + pthread [`make random-t`]
+
+
