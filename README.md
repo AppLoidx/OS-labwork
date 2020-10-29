@@ -1,4 +1,4 @@
-# OS laboratory work [60%]
+# OS laboratory work [80%]
 
 > * Allocate memory with `mmap` and dump to files.
 > * Work with `pthread`
