@@ -102,7 +102,12 @@ fmem(void *addr, size_t size, int logEnabled)
 
 void
 dumpMem(int fd, void * addr, int size) {
-    
+    printf("Dump memory to %d\t from %p \t[size=%d]", fd, addr, size);
+    for (int i = 0; i < size / 11; i++) {
+        void * pointer = addr + i;
+        size_t r = write(fd, &pointer, 11);
+        // printf(" bytes written %zu", r);
+    }
 }
 
 struct memoryDumpMap {
@@ -142,11 +147,23 @@ int main()
         }
 
         dumpMap[i]->fd = files[i];
-        dumpMap[i]->addr = (void*) ALLOC_ADDR;
+        dumpMap[i]->addr = memoryAddr + i * (dumpMemSize / 8);
         dumpMap[i]->size = dumpMemSize;
     }
+   
+    puts("Start infinite loop...");
+
+    //while (1) {
+        for (int i = 0; i < filesAmount; i++) {
+            dumpMem(dumpMap[i]->fd, dumpMap[i]->addr, dumpMap[i]->size);
+            puts("");
+            sleep(1);
+        }
+    //}
     
-    
+    for (int i = 0; i < filesAmount; i++){
+        close(files[i]);
+    }
 
     return 0;
 }
