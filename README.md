@@ -1,5 +1,8 @@
 # OS laboratory work [60%]
 
+> * Allocating memory with `mmap` and dumping memory to files.
+> * System monitoring
+
 ### Run
 
 ```bash
