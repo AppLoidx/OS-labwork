@@ -1,6 +1,7 @@
 # OS laboratory work [60%]
 
-> * Allocating memory with `mmap` and dumping memory to files.
+> * Allocate memory with `mmap` and dump to files.
+> * Work with `pthread`
 > * System monitoring
 
 ### Run
